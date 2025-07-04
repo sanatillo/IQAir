@@ -1,0 +1,225 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Khorezm AQI Visualization with Wind Particles</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+    }
+    #map { 
+      height: 100vh; 
+      width: 100%; 
+      position: absolute; 
+      top: 0; 
+      left: 0; 
+      z-index: 1;
+    }
+    #particles { 
+      position: absolute; 
+      top: 0; 
+      left: 0; 
+      width: 100%; 
+      height: 100%; 
+      z-index: 2;
+      pointer-events: none;
+    }
+    .info {
+      position: absolute;
+      bottom: 20px;
+      right: 20px;
+      background: rgba(255, 255, 255, 0.8);
+      padding: 10px;
+      border-radius: 5px;
+      z-index: 3;
+      font-family: Arial, sans-serif;
+    }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <canvas id="particles"></canvas>
+  <div class="info" id="wind-info">Wind: Loading...</div>
+
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+  <script>
+    // Global variables to store weather data
+    let currentWeatherData = {
+      ws: 0, // wind speed
+      wd: 0  // wind direction
+    };
+
+    const map = L.map('map', {
+      center: [41.5, 60.8],
+      zoom: 9,
+      zoomControl: true
+    });
+
+    // Light background
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '© OpenStreetMap contributors'
+    }).addTo(map);
+
+    const token = "6a63ba16-f1b4-455e-ba95-ad54fb6db80a"; // Replace with your real key
+
+    async function loadAQIMapAndWind() {
+      try {
+        const urgench = await fetch(`https://api.airvisual.com/v2/city?city=Urganch&state=Xorazm&country=Uzbekistan&key=${token}`).then(r => r.json());
+        const khiva = await fetch(`https://api.airvisual.com/v2/city?city=Pitnak&state=Xorazm&country=Uzbekistan&key=${token}`).then(r => r.json());
+	console.log(urgench);
+	console.log(khiva);
+        const urAQI = urgench.data?.current?.pollution?.aqicn ?? 50;
+        const khAQI = khiva.data?.current?.pollution?.aqicn ?? 70;
+
+        // Update global weather data
+        currentWeatherData.ws = urgench.data?.current?.weather?.ws ?? 0;
+        currentWeatherData.wd = urgench.data?.current?.weather?.wd ?? 0;
+
+        // Update wind info display
+        document.getElementById('wind-info').textContent = 
+          `Wind: ${currentWeatherData.ws.toFixed(1)} m/s, ${currentWeatherData.wd}°`;
+
+        const geo = await fetch("xorazm_districts_merged.geojson").then(r => r.json());
+        const khivaRelated = ["Hazorasp", "Bogʻot", "Yangiariq"];
+
+        function getColor(aqi) {
+          const scale = [
+            [0, [0, 128, 0]], [50, [255, 255, 0]],
+            [100, [255, 165, 0]], [150, [255, 0, 0]],
+            [200, [128, 0, 128]], [300, [128, 0, 0]]
+          ];
+          for (let i = 0; i < scale.length - 1; i++) {
+            const [a1, c1] = scale[i], [a2, c2] = scale[i + 1];
+            if (aqi >= a1 && aqi <= a2) {
+              const r = (aqi - a1) / (a2 - a1);
+              const mix = (a, b) => Math.round(a + (b - a) * r);
+              return `rgb(${mix(c1[0], c2[0])},${mix(c1[1], c2[1])},${mix(c1[2], c2[2])})`;
+            }
+          }
+          return 'rgb(128,0,0)';
+        }
+
+        L.geoJson(geo, {
+          style: f => {
+            const name = f.properties.name;
+            const aqi = khivaRelated.includes(name) ? khAQI : urAQI;
+            return {
+              fillColor: getColor(aqi),
+              fillOpacity: 0.8,
+              color: null,
+              weight: 0
+            };
+          },
+          onEachFeature: (feature, layer) => {
+            const name = feature.properties.name;
+            const aqi = khivaRelated.includes(name) ? khAQI : urAQI;
+            layer.bindTooltip(`${name}: AQI ${aqi}`, { sticky: true });
+          }
+        }).addTo(map);
+
+        // Initialize wind particles with current weather data
+        initWindParticles();
+      } catch (error) {
+        console.error("Error loading data:", error);
+        document.getElementById('wind-info').textContent = "Error loading wind data";
+      }
+    }
+
+    // Wind particles logic
+    const canvas = document.getElementById('particles');
+    const ctx = canvas.getContext('2d');
+
+    function resize() {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    const pointCount = 100; // Increased number of particles
+    const maxLife = 500;
+    const points = [];
+
+    function createPoint() {
+      const angle = (currentWeatherData.wd )//* (Math.PI / 180)) //+ (Math.random() - 0.5) * 0.5; // Add slight randomness
+      const speed = (currentWeatherData.ws * 0.2) //+ (Math.random() * 0.5 - 0.25); // Add slight randomness
+      return {
+        x: Math.random() * canvas.width,
+        y: Math.random() * canvas.height,
+        vx: speed * Math.cos(angle),
+        vy: speed * Math.sin(angle),
+        life: 0,
+        maxLife: Math.floor(Math.random() * maxLife) + maxLife / 2,
+        width: 2 + Math.random() * 3 // Random width for variety
+      };
+    }
+
+    function initWindParticles() {
+      // Clear existing points
+      points.length = 0;
+      
+      // Create new points with current weather data
+      for (let i = 0; i < pointCount; i++) {
+        points.push(createPoint());
+      }
+      
+      // Start animation if not already running
+      if (!animationRunning) {
+        animationRunning = true;
+        animate();
+      }
+    }
+
+    let animationRunning = false;
+
+    function drawFadingStreak(p) {
+      const angle = Math.atan2(p.vy, p.vx);
+      const length = 30 + Math.random() * 20; // Variable length
+      const steps = 10;
+      const fade = Math.sin((p.life / p.maxLife) * Math.PI); // fade in/out
+      const opacityBase = 0.7 + Math.random() * 0.3; // Variable opacity
+
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      ctx.rotate(angle);
+
+      for (let i = 0; i < steps; i++) {
+        const t = i / steps;
+        const alpha = (1 - t) * fade * opacityBase;
+        ctx.beginPath();
+        ctx.moveTo(-length * t, 0);
+        ctx.lineTo(-length * (t + 1 / steps), 0);
+        ctx.strokeStyle = `rgba(255, 255, 255, ${alpha})`;
+        ctx.lineWidth = p.width;
+        ctx.stroke();
+      }
+
+      ctx.restore();
+    }
+
+    function animate() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      points.forEach((p, i) => {
+        p.x += p.vx;
+        p.y += p.vy;
+        p.life++;
+
+        drawFadingStreak(p);
+
+        if (p.life > p.maxLife || p.x > canvas.width || p.y < 0 || p.y > canvas.height) {
+          points[i] = createPoint(); // reset with current weather data
+        }
+      });
+
+      requestAnimationFrame(animate);
+    }
+
+    loadAQIMapAndWind();
+  </script>
+</body>
+</html>
